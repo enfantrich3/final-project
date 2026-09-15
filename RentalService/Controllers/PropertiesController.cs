@@ -171,7 +171,7 @@ public class PropertiesController : ControllerBase
         if (dto.Description != null) property.Description = dto.Description;
         if (dto.BasePrice.HasValue) property.BasePrice = dto.BasePrice.Value;
 
-        // адрес, комнаты и тип нельзя менять при активных бронях
+        
         if (!hasActiveBookings)
         {
             if (dto.City != null) property.City = dto.City;
@@ -196,7 +196,7 @@ public class PropertiesController : ControllerBase
         if (property == null)
             return NotFound();
 
-        // нельзя опубликовать объект без фотографий
+        
         if (dto.Status == PropertyStatus.active && !property.Photos.Any())
             return BadRequest("Нельзя опубликовать объект без фотографий.");
 
@@ -217,7 +217,7 @@ public class PropertiesController : ControllerBase
         if (property == null)
             return NotFound();
 
-        // нельзя удалить если есть активные брони
+        
         var hasActiveBookings = property.Bookings
             .Any(b => b.Status == BookingStatus.pending || b.Status == BookingStatus.confirmed);
 

@@ -3596,19 +3596,19 @@
     ]
   },
   "packageFolders": {
-    "C:\\Users\\Anr1st\\.nuget\\packages\\": {}
+    "/Users/enfantriche/.nuget/packages/": {}
   },
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "C:\\Users\\Anr1st\\Desktop\\final_project\\RentalService\\RentalService.csproj",
+      "projectUniqueName": "/Users/enfantriche/final_project_clean/RentalService/RentalService.csproj",
       "projectName": "RentalService",
-      "projectPath": "C:\\Users\\Anr1st\\Desktop\\final_project\\RentalService\\RentalService.csproj",
-      "packagesPath": "C:\\Users\\Anr1st\\.nuget\\packages\\",
-      "outputPath": "C:\\Users\\Anr1st\\Desktop\\final_project\\RentalService\\obj\\",
+      "projectPath": "/Users/enfantriche/final_project_clean/RentalService/RentalService.csproj",
+      "packagesPath": "/Users/enfantriche/.nuget/packages/",
+      "outputPath": "/Users/enfantriche/final_project_clean/RentalService/obj/",
       "projectStyle": "PackageReference",
       "configFilePaths": [
-        "C:\\Users\\Anr1st\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        "/Users/enfantriche/.nuget/NuGet/NuGet.Config"
       ],
       "originalTargetFrameworks": [
         "net9.0"
@@ -3680,7 +3680,7 @@
             "privateAssets": "all"
           }
         },
-        "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.315/PortableRuntimeIdentifierGraph.json"
+        "runtimeIdentifierGraphPath": "/usr/local/share/dotnet/sdk/9.0.305/PortableRuntimeIdentifierGraph.json"
       }
     }
   }
