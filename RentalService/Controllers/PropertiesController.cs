@@ -86,6 +86,33 @@ public class PropertiesController : ControllerBase
         return Ok(property);
     }
 
+    [HttpGet("{id:guid}/availability")]
+    public async Task<IActionResult> GetAvailability(Guid id, [FromQuery] DateOnly? from, [FromQuery] DateOnly? to)
+    {
+        if (from == null || to == null)
+            return BadRequest("Параметры from и to обязательны.");
+
+        if (from > to)
+            return BadRequest("Дата from не может быть позже даты to.");
+
+        var propertyExists = await _db.Properties.AnyAsync(p => p.Id == id);
+        if (!propertyExists)
+            return NotFound();
+
+        var fromDate = from.Value;
+        var toDate = to.Value;
+
+        var occupiedRanges = await _db.Bookings
+            .Where(b => b.PropertyId == id
+                && (b.Status == BookingStatus.pending || b.Status == BookingStatus.confirmed)
+                && b.CheckIn < toDate && b.CheckOut > fromDate)
+            .OrderBy(b => b.CheckIn)
+            .Select(b => new OccupiedRangeDto { CheckIn = b.CheckIn, CheckOut = b.CheckOut })
+            .ToListAsync();
+
+        return Ok(occupiedRanges);
+    }
+
     [HttpGet("{id:guid}/calendar")]
     [Authorize]
     public async Task<IActionResult> GetPropertyCalendar(Guid id)

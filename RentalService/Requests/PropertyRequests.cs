@@ -41,3 +41,9 @@ public class AddPriceRateDto
     public DateOnly EndDate { get; set; }
     public decimal PricePerDay { get; set; }
 }
+
+public class OccupiedRangeDto
+{
+    public DateOnly CheckIn { get; set; }
+    public DateOnly CheckOut { get; set; }
+}
