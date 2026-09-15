@@ -202,6 +202,72 @@ public class BookingsController : ControllerBase
         return Ok(ToResponse(booking));
     }
 
+    [HttpPatch("{id}/reschedule")]
+    [Authorize]
+    public async Task<IActionResult> RescheduleBooking(Guid id, [FromBody] RescheduleBookingRequest request)
+    {
+        var currentUserId = GetCurrentUserId();
+        if (currentUserId == null)
+            return Unauthorized();
+
+        var booking = await _context.Bookings
+            .Include(b => b.Property)
+                .ThenInclude(p => p!.PriceRates)
+            .Include(b => b.Payment)
+            .FirstOrDefaultAsync(b => b.Id == id);
+
+        if (booking == null)
+            return NotFound();
+
+        if (booking.RenterId != currentUserId.Value)
+            return Forbid();
+
+        if (booking.Status != BookingStatus.pending && booking.Status != BookingStatus.confirmed)
+            return BadRequest("Перенос дат доступен только для бронирований в статусе pending или confirmed.");
+
+        if (request.CheckIn >= request.CheckOut)
+            return BadRequest("Дата заезда должна быть раньше даты выезда.");
+
+        if (booking.Property == null)
+            return NotFound("Property not found.");
+
+        var existingBookings = await _context.Bookings
+            .Where(b => b.PropertyId == booking.PropertyId && b.Id != booking.Id && b.Status != BookingStatus.cancelled)
+            .ToListAsync();
+
+        foreach (var existing in existingBookings)
+        {
+            if (DatesOverlap(existing.CheckIn, existing.CheckOut, request.CheckIn, request.CheckOut))
+                return Conflict("Даты пересекаются с уже существующим бронированием.");
+        }
+
+        decimal subtotal = 0;
+        var date = request.CheckIn;
+        while (date < request.CheckOut)
+        {
+            var rate = booking.Property.PriceRates
+                .FirstOrDefault(r => date >= r.StartDate && date <= r.EndDate);
+
+            subtotal += rate != null ? rate.PricePerDay : booking.Property.BasePrice;
+
+            date = date.AddDays(1);
+        }
+
+        var serviceFee = Math.Round(subtotal * 0.11m, 2);
+        var totalPrice = subtotal + serviceFee;
+
+        booking.CheckIn = request.CheckIn;
+        booking.CheckOut = request.CheckOut;
+        booking.TotalPrice = totalPrice;
+        booking.ServiceFee = serviceFee;
+
+        await _context.SaveChangesAsync();
+
+        _emailService.SendBookingRescheduledEmail(booking);
+
+        return Ok(ToResponse(booking));
+    }
+
     private static bool DatesOverlap(DateOnly startA, DateOnly endA, DateOnly startB, DateOnly endB)
     {
         if (startA < endB && startB < endA)
@@ -252,6 +318,12 @@ public class BookingsController : ControllerBase
         public DateOnly CheckIn { get; set; }
         public DateOnly CheckOut { get; set; }
         public string? Comment { get; set; }
+    }
+
+    public class RescheduleBookingRequest
+    {
+        public DateOnly CheckIn { get; set; }
+        public DateOnly CheckOut { get; set; }
     }
 
     public class BookingResponse

@@ -23,4 +23,9 @@ public class MockEmailService
     {
         Console.WriteLine($"[MockEmailService] Письмо об отмене: бронирование {booking.Id} отменено. Сумма возврата: {booking.TotalPrice} руб.");
     }
+
+    public void SendBookingRescheduledEmail(Booking booking)
+    {
+        Console.WriteLine($"[MockEmailService] Письмо о переносе: бронирование {booking.Id} перенесено на новые даты {booking.CheckIn} — {booking.CheckOut}. Новая сумма: {booking.TotalPrice} руб.");
+    }
 }
