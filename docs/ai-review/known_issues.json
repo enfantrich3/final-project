@@ -1,0 +1,26 @@
+{
+  "pr_branch": "feature/property-reviews",
+  "issues": [
+    {"id": "K1",  "category": "security",     "rule": "SEC-1",   "file": "RentalService/Controllers/PropertiesController.cs", "lines": [93],       "title": "SQL injection: FromSqlRaw с конкатенацией city в Search"},
+    {"id": "K2",  "category": "security",     "rule": "SEC-4",   "file": "RentalService/Controllers/ReviewsController.cs",    "lines": [27, 32],   "title": "GET отзывов отдаёт Author (User) целиком вместе с PasswordHash"},
+    {"id": "K3",  "category": "security",     "rule": "SEC-2",   "file": "RentalService/Controllers/ReviewsController.cs",    "lines": [104, 105, 107, 111], "title": "DELETE отзыва без [Authorize] и без проверки автора"},
+    {"id": "K4",  "category": "security",     "rule": "SEC-3",   "file": "RentalService/Controllers/BookingsController.cs",   "lines": [177, 179, 181, 182, 183, 188], "title": "IDOR: UpdateComment меняет чужую бронь без проверки RenterId"},
+    {"id": "K5",  "category": "bug",          "rule": "BUG-1",   "file": "RentalService/Controllers/BookingsController.cs",   "lines": [167, 169, 172], "title": "CheckDates: <=/>= вместо </> (смежные брони считаются пересечением) и нет проверки checkIn < checkOut"},
+    {"id": "K6",  "category": "bug",          "rule": "BUG-2",   "file": "RentalService/Controllers/PropertiesController.cs", "lines": [115, 117, 119], "title": "Выручка считается в double вместо decimal"},
+    {"id": "K7",  "category": "bug",          "rule": "BUG-3",   "file": "RentalService/Controllers/ReviewsController.cs",    "lines": [99],       "title": "SaveChangesAsync() без await в Update отзыва"},
+    {"id": "K8",  "category": "bug",          "rule": "BUG-4",   "file": "RentalService/Controllers/ReviewsController.cs",    "lines": [36, 38, 42], "title": ".Result в async-методе GetAverageRating"},
+    {"id": "K9",  "category": "bug",          "rule": "BUG-6",   "file": "RentalService/Controllers/ReviewsController.cs",    "lines": [73],       "title": "DateTime.Now вместо UtcNow при сохранении отзыва"},
+    {"id": "K10", "category": "bug",          "rule": "PERF-1",  "file": "RentalService/Controllers/PropertiesController.cs", "lines": [109, 111, 112, 113], "title": "N+1: запрос броней в цикле по объектам в GetMyStats"},
+    {"id": "K11", "category": "missing-test", "rule": "TEST-1",  "file": "RentalService/Controllers/ReviewsController.cs",    "lines": [0, 1, 10, 11, 12], "title": "ReviewsController (5 endpoint) без единого теста"},
+    {"id": "K12", "category": "missing-test", "rule": "TEST-1",  "file": "RentalService/Controllers/PropertiesController.cs", "lines": [0, 89, 90, 99, 100, 101], "title": "Search и GetMyStats без тестов"},
+    {"id": "K13", "category": "bug",          "rule": "PY-1",    "file": "Frontend/streamlit_app.py",                         "lines": [46, 47, 48, 49], "title": "requests.get без timeout и без обработки исключений"},
+    {"id": "K14", "category": "style",        "rule": "STYLE-1", "file": "RentalService/Controllers/ReviewsController.cs",    "lines": [56, 90],   "title": "Магическое число 5 (макс. оценка), продублировано"},
+    {"id": "K15", "category": "style",        "rule": "STYLE-2", "file": "RentalService/Controllers/ReviewsController.cs",    "lines": [79],       "title": "Console.WriteLine в контроллере вместо ILogger"}
+  ],
+  "baits": [
+    {"id": "F1", "file": "RentalService/Controllers/PropertiesController.cs", "lines": [104, 105], "title": "FromSqlInterpolated — параметризованный запрос, не SQL injection"},
+    {"id": "F2", "file": "RentalService/Controllers/ReviewsController.cs",    "lines": [23, 24, 35, 36], "title": "Публичные GET отзывов/рейтинга без [Authorize] — намеренно"},
+    {"id": "F3", "file": "RentalService/Controllers/ReviewsController.cs",    "lines": [21],      "title": "GetUserId() с ! — claim гарантирован [Authorize]"},
+    {"id": "F4", "file": "RentalService/Controllers/ReviewsController.cs",    "lines": [109],     "title": "Конкатенация строк в тексте NotFound — не SQL"}
+  ]
+}
