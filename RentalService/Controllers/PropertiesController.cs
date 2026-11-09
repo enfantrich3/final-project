@@ -86,6 +86,42 @@ public class PropertiesController : ControllerBase
         return Ok(property);
     }
 
+    [HttpGet("search")]
+    public async Task<IActionResult> Search([FromQuery] string city)
+    {
+        var properties = await _db.Properties
+            .FromSqlRaw("SELECT * FROM \"Properties\" WHERE \"Status\" = 1 AND \"City\" = '" + city + "'")
+            .ToListAsync();
+
+        return Ok(properties);
+    }
+
+    [HttpGet("my/stats")]
+    [Authorize]
+    public async Task<IActionResult> GetMyStats()
+    {
+        var userId = GetUserId();
+        var properties = await _db.Properties
+            .FromSqlInterpolated($"SELECT * FROM \"Properties\" WHERE \"OwnerId\" = {userId}")
+            .ToListAsync();
+
+        var result = new List<object>();
+        foreach (var property in properties)
+        {
+            var bookings = await _db.Bookings
+                .Where(b => b.PropertyId == property.Id && b.Status != BookingStatus.cancelled)
+                .ToListAsync();
+
+            double revenue = 0;
+            foreach (var booking in bookings)
+                revenue += (double)booking.TotalPrice;
+
+            result.Add(new { property.Id, property.Title, Bookings = bookings.Count, Revenue = revenue });
+        }
+
+        return Ok(result);
+    }
+
     [HttpGet("{id:guid}/availability")]
     public async Task<IActionResult> GetAvailability(Guid id, [FromQuery] DateOnly? from, [FromQuery] DateOnly? to)
     {

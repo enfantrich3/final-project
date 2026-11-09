@@ -162,6 +162,35 @@ public class BookingsController : ControllerBase
         return Ok(result);
     }
 
+    [HttpGet("check")]
+    [Authorize]
+    public async Task<IActionResult> CheckDates([FromQuery] Guid propertyId, [FromQuery] DateOnly checkIn, [FromQuery] DateOnly checkOut)
+    {
+        var busy = await _context.Bookings.AnyAsync(b =>
+            b.PropertyId == propertyId &&
+            b.Status != BookingStatus.cancelled &&
+            b.CheckIn <= checkOut && b.CheckOut >= checkIn);
+
+        return Ok(new { Available = !busy });
+    }
+
+    [HttpPatch("{id}/comment")]
+    [Authorize]
+    public async Task<IActionResult> UpdateComment(Guid id, [FromBody] UpdateBookingCommentRequest request)
+    {
+        var booking = await _context.Bookings
+            .Include(b => b.Payment)
+            .FirstOrDefaultAsync(b => b.Id == id);
+
+        if (booking == null)
+            return NotFound();
+
+        booking.Comment = request.Comment ?? string.Empty;
+        await _context.SaveChangesAsync();
+
+        return Ok(ToResponse(booking));
+    }
+
     [HttpPost("{id}/cancel")]
     [Authorize]
     public async Task<IActionResult> CancelBooking(Guid id)
@@ -317,6 +346,11 @@ public class BookingsController : ControllerBase
         public Guid PropertyId { get; set; }
         public DateOnly CheckIn { get; set; }
         public DateOnly CheckOut { get; set; }
+        public string? Comment { get; set; }
+    }
+
+    public class UpdateBookingCommentRequest
+    {
         public string? Comment { get; set; }
     }
 

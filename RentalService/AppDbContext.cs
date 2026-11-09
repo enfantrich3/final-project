@@ -13,6 +13,7 @@ public class AppDbContext : DbContext
     public DbSet<PriceRate> PriceRates { get; set; }
     public DbSet<Booking> Bookings { get; set; }
     public DbSet<Payment> Payments { get; set; }
+    public DbSet<Review> Reviews { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -39,5 +40,15 @@ public class AppDbContext : DbContext
             .HasOne(p => p.Booking)
             .WithOne(b => b.Payment)
             .HasForeignKey<Payment>(p => p.BookingId);
+
+        modelBuilder.Entity<Review>()
+            .HasOne(r => r.Property)
+            .WithMany()
+            .HasForeignKey(r => r.PropertyId);
+
+        modelBuilder.Entity<Review>()
+            .HasOne(r => r.Author)
+            .WithMany()
+            .HasForeignKey(r => r.AuthorId);
     }
 }
