@@ -48,18 +48,18 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install --quiet "anthropic>=1.0,<2"
+        run: pip install --quiet "google-genai>=1.0,<4"
 
       - name: Run review
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python .github/scripts/ai_review.py \
             --diff diff.txt \
             --instructions .github/review-instructions.md \
             --out review.md \
             --json-out review.json \
-          || printf '<!-- ai-review-bot -->\n## 🤖 AI code review\n\n⚠️ Скрипт ревью завершился с ошибкой, review пропущен.\n' > review.md
+          || printf '<!-- ai-review-bot -->\n## AI code review\n\nСкрипт ревью завершился с ошибкой, review пропущен.\n' > review.md
 
       - name: Upload review artifacts
         if: always()

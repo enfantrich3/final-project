@@ -2,7 +2,7 @@
 """AI code-review для pull request.
 
 Читает diff PR, фильтрует нерелевантные файлы, проверяет порог размера,
-отправляет diff + чек-лист в Claude, получает structured output (JSON)
+отправляет diff + чек-лист в Gemini, получает structured output (JSON)
 и пишет markdown-комментарий в файл.
 
 Скрипт НИКОГДА не завершается с ненулевым кодом: любая ошибка (нет ключа,
@@ -27,7 +27,7 @@ from pathlib import Path
 
 MARKER = "<!-- ai-review-bot -->"
 
-MODEL = os.environ.get("AI_REVIEW_MODEL", "claude-opus-5-5")
+MODEL = os.environ.get("AI_REVIEW_MODEL", "gemini-3.8-flash")
 
 # Порог размера diff (обоснование — в REPORT.md).
 # Считаются только добавленные+удалённые строки в файлах, прошедших фильтр.
@@ -188,49 +188,60 @@ class ModelError(Exception):
 def call_model(system: str, user: str) -> str:
     """Возвращает сырой текст ответа модели или бросает ModelError."""
     try:
-        import anthropic
-    except ImportError as e:  # pragma: no cover - зависит от окружения
-        raise ModelError(f"пакет anthropic не установлен ({e})") from e
+        from google import genai
+        from google.genai import errors as genai_errors
+        from google.genai import types
+    except ImportError as e:
+        raise ModelError(f"пакет google-genai не установлен ({e})") from e
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise ModelError("секрет ANTHROPIC_API_KEY не задан")
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise ModelError("секрет GEMINI_API_KEY не задан")
 
-    client = anthropic.Anthropic(timeout=REQUEST_TIMEOUT_SEC, max_retries=2)
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(
+            timeout=int(REQUEST_TIMEOUT_SEC * 1000),  # в миллисекундах
+            retry_options=types.HttpRetryOptions(attempts=3),
+        ),
+    )
     try:
-        response = client.messages.create(
+        response = client.models.generate_content(
             model=MODEL,
-            max_tokens=16000,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-            output_config={
-                "effort": "high",
-                "format": {"type": "json_schema", "schema": RESPONSE_SCHEMA},
-            },
-            # Если модель отклонит запрос, сервер сам перезапустит его на резервной модели.
-            extra_headers={"anthropic-beta": "server-side-fallback-2026-07-01"},
-            extra_body={"fallbacks": "default"},
+            contents=user,
+            config=types.GenerateContentConfig(
+                system_instruction=system,
+                response_mime_type="application/json",
+                response_json_schema=RESPONSE_SCHEMA,
+                max_output_tokens=16000,
+            ),
         )
-    except anthropic.APITimeoutError as e:
-        raise ModelError(f"таймаут запроса к модели ({REQUEST_TIMEOUT_SEC:.0f} с)") from e
-    except anthropic.AuthenticationError as e:
-        raise ModelError("неверный ANTHROPIC_API_KEY") from e
-    except anthropic.RateLimitError as e:
-        raise ModelError("превышен rate limit API") from e
-    except anthropic.APIStatusError as e:
-        raise ModelError(f"ошибка API {e.status_code}: {e.message}") from e
-    except anthropic.APIConnectionError as e:
-        raise ModelError("нет соединения с API") from e
+    except genai_errors.ClientError as e:
+        if "API key" in str(e.message) or e.code in (401, 403):
+            raise ModelError("неверный GEMINI_API_KEY") from e
+        if e.code == 429:
+            raise ModelError("исчерпан лимит запросов бесплатного тарифа, попробуйте позже") from e
+        raise ModelError(f"ошибка API {e.code}: {e.message}") from e
+    except genai_errors.ServerError as e:
+        raise ModelError(f"ошибка сервера модели {e.code}") from e
+    except Exception as e:
+        if "timeout" in type(e).__name__.lower():
+            raise ModelError(f"таймаут запроса к модели ({REQUEST_TIMEOUT_SEC:.0f} с)") from e
+        raise ModelError(f"нет соединения с API ({type(e).__name__})") from e
 
-    print(f"request_id={response._request_id} stop_reason={response.stop_reason} "
-          f"usage={response.usage.input_tokens}in/{response.usage.output_tokens}out",
-          file=sys.stderr)
+    usage = response.usage_metadata
+    finish = response.candidates[0].finish_reason if response.candidates else None
+    print(f"finish_reason={finish} usage={getattr(usage, 'prompt_token_count', '?')}in/"
+          f"{getattr(usage, 'candidates_token_count', '?')}out", file=sys.stderr)
 
-    if response.stop_reason == "refusal":
-        raise ModelError("модель отказалась выполнять запрос (refusal)")
-    if response.stop_reason == "max_tokens":
-        raise ModelError("ответ модели обрезан по max_tokens")
+    if response.prompt_feedback and response.prompt_feedback.block_reason:
+        raise ModelError(f"модель отказалась выполнять запрос ({response.prompt_feedback.block_reason})")
+    if finish is not None and finish.name == "MAX_TOKENS":
+        raise ModelError("ответ модели обрезан по лимиту токенов")
+    if finish is not None and finish.name not in ("STOP", "FINISH_REASON_UNSPECIFIED"):
+        raise ModelError(f"модель остановилась с причиной {finish.name}")
 
-    text = "".join(b.text for b in response.content if b.type == "text")
+    text = response.text or ""
     if not text.strip():
         raise ModelError("модель вернула пустой ответ")
     return text
@@ -293,9 +304,6 @@ def parse_comments(text: str) -> list[dict] | None:
 # Markdown
 # ---------------------------------------------------------------------------
 
-ICONS = {"error": "🔴", "warning": "🟡", "info": "🔵"}
-
-
 def _md_cell(s: str) -> str:
     return s.replace("|", "\\|").replace("\n", " ")
 
@@ -305,14 +313,14 @@ def render_review(comments: list[dict], files: list[FileDiff], skipped: list[str
     counts = {s: sum(1 for c in comments if c["severity"] == s) for s in SEVERITIES}
     out = [
         MARKER,
-        "## 🤖 AI code review",
+        "## AI code review",
         "",
         f"Проверено файлов: **{len(files)}**, изменённых строк: **{total}**. "
-        f"Найдено: 🔴 {counts['error']} error · 🟡 {counts['warning']} warning · 🔵 {counts['info']} info.",
+        f"Найдено: {counts['error']} error, {counts['warning']} warning, {counts['info']} info.",
         "",
     ]
     if not comments:
-        out.append("Нарушений чек-листа не найдено. ✅")
+        out.append("Нарушений чек-листа не найдено.")
     else:
         order = {s: i for i, s in enumerate(SEVERITIES)}
         comments = sorted(comments, key=lambda c: (order[c["severity"]], c["file"], c["line"]))
@@ -320,7 +328,7 @@ def render_review(comments: list[dict], files: list[FileDiff], skipped: list[str
         for i, c in enumerate(comments, 1):
             loc = f"`{c['file']}:{c['line']}`" if c["line"] else f"`{c['file']}`"
             out.append(
-                f"| {i} | {ICONS[c['severity']]} {c['severity']} | {c['rule']} | {loc} "
+                f"| {i} | {c['severity']} | {c['rule']} | {loc} "
                 f"| {_md_cell(c['message'])} | {_md_cell(c['reason'])} |"
             )
     out += _footer(skipped)
@@ -337,7 +345,7 @@ def render_review(comments: list[dict], files: list[FileDiff], skipped: list[str
 
 
 def render_notice(title: str, text: str, skipped: list[str] | None = None, raw: str | None = None) -> str:
-    out = [MARKER, f"## 🤖 AI code review — {title}", "", text]
+    out = [MARKER, f"## AI code review — {title}", "", text]
     if raw:
         snippet = raw[:3000].replace("```", "ˋˋˋ")
         out += ["", "<details><summary>Сырой ответ модели</summary>", "", "```", snippet, "```", "</details>"]
@@ -388,12 +396,12 @@ def run(diff_path: Path, instructions_path: Path, agents_path: Path | None) -> t
     try:
         text = call_model(build_system_prompt(instructions, agents_md), build_user_prompt(files))
     except ModelError as e:
-        return render_notice("не выполнено", f"⚠️ Ревью не выполнено: {e}. Workflow продолжен без ревью.", skipped), None
+        return render_notice("не выполнено", f"Ревью не выполнено: {e}. Workflow продолжен без ревью.", skipped), None
 
     comments = parse_comments(text)
     if comments is None:
         return render_notice("невалидный ответ",
-                             "⚠️ Модель вернула ответ, который не удалось разобрать как JSON по схеме. "
+                             "Модель вернула ответ, который не удалось разобрать как JSON по схеме. "
                              "Ревью не опубликовано.", skipped, raw=text), None
     return render_review(comments, files, skipped), comments
 
@@ -411,7 +419,7 @@ def main() -> int:
         markdown, comments = run(args.diff, args.instructions, args.agents)
     except Exception as e:  # последний рубеж: workflow не должен падать
         markdown, comments = render_notice("внутренняя ошибка",
-                                           f"⚠️ Внутренняя ошибка ревью-скрипта: `{type(e).__name__}`. "
+                                           f"Внутренняя ошибка ревью-скрипта: `{type(e).__name__}`. "
                                            "Review пропущен."), None
         print(f"unexpected error: {e!r}", file=sys.stderr)
 
