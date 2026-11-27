@@ -1,0 +1,86 @@
+name: ai-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# По умолчанию у токена нет никаких прав; нужные выдаются на уровне job.
+permissions: {}
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # PR из форков не получают секреты — не запускаемся для них.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read        # checkout
+      pull-requests: write  # комментарий в PR
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Get PR diff (three-dot, filtered)
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git diff --no-color --no-ext-diff "origin/${BASE_REF}...${HEAD_SHA}" -- . \
+            ':(exclude,glob)**/*.lock' \
+            ':(exclude,glob)**/packages.lock.json' \
+            ':(exclude,glob)**/package-lock.json' \
+            ':(exclude,glob)**/dist/**' \
+            ':(exclude,glob)**/generated/**' \
+            ':(exclude,glob)**/bin/**' \
+            ':(exclude,glob)**/obj/**' \
+            ':(exclude,glob)**/Migrations/**' \
+            > diff.txt
+          echo "Изменённые файлы:"; git diff --stat "origin/${BASE_REF}...${HEAD_SHA}" | tail -n 30
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run review
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          python .github/scripts/ai_review.py \
+            --diff diff.txt \
+            --instructions .github/review-instructions.md \
+            --out review.md \
+            --json-out review.json \
+          || printf '<!-- ai-review-bot -->\n## AI code review\n\nСкрипт ревью завершился с ошибкой, review пропущен.\n' > review.md
+
+      - name: Upload review artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-review
+          path: |
+            review.md
+            review.json
+          if-no-files-found: ignore
+
+      - name: Post comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('review.md', 'utf8');
+            const marker = '<!-- ai-review-bot -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const prev = comments.find(c => c.user.type === 'Bot' && c.body.includes(marker));
+            if (prev) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: prev.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
