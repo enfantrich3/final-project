@@ -2,7 +2,7 @@
 """AI code-review для pull request.
 
 Читает diff PR, фильтрует нерелевантные файлы, проверяет порог размера,
-отправляет diff + чек-лист в Gemini, получает structured output (JSON)
+отправляет diff + чек-лист в модель через OpenRouter, получает structured output (JSON)
 и пишет markdown-комментарий в файл.
 
 Скрипт НИКОГДА не завершается с ненулевым кодом: любая ошибка (нет ключа,
@@ -21,13 +21,19 @@ import fnmatch
 import json
 import os
 import re
+import socket
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
 MARKER = "<!-- ai-review-bot -->"
 
-MODEL = os.environ.get("AI_REVIEW_MODEL", "gemini-3.8-flash")
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+MODEL = os.environ.get("AI_REVIEW_MODEL", "nvidia/nemotron-3.5-super-vl:free")
+# если основная модель недоступна: бесплатный роутер OpenRouter выбирает любую свободную модель
+FALLBACK_MODEL = os.environ.get("AI_REVIEW_FALLBACK_MODEL", "openrouter/free")
 
 # Порог размера diff (обоснование — в REPORT.md).
 # Считаются только добавленные+удалённые строки в файлах, прошедших фильтр.
@@ -185,66 +191,93 @@ class ModelError(Exception):
     """Ожидаемая ошибка вызова модели — превращается в fallback-комментарий."""
 
 
-def call_model(system: str, user: str) -> str:
-    """Возвращает сырой текст ответа модели или бросает ModelError."""
-    try:
-        from google import genai
-        from google.genai import errors as genai_errors
-        from google.genai import types
-    except ImportError as e:
-        raise ModelError(f"пакет google-genai не установлен ({e})") from e
-
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise ModelError("секрет GEMINI_API_KEY не задан")
-
-    client = genai.Client(
-        api_key=api_key,
-        http_options=types.HttpOptions(
-            timeout=int(REQUEST_TIMEOUT_SEC * 1000),  # в миллисекундах
-            retry_options=types.HttpRetryOptions(attempts=3),
-        ),
+def _request_openrouter(api_key: str, model: str, system: str, user: str) -> str:
+    """Один запрос к OpenRouter. Возвращает текст ответа или бросает ModelError."""
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "review", "strict": True, "schema": RESPONSE_SCHEMA},
+        },
+        # отправлять только тем провайдерам, которые поддерживают response_format
+        "provider": {"require_parameters": True},
+        "max_tokens": 16000,
+    }
+    req = urllib.request.Request(
+        OPENROUTER_URL,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "X-Title": "ai-review-bot",
+        },
+        method="POST",
     )
     try:
-        response = client.models.generate_content(
-            model=MODEL,
-            contents=user,
-            config=types.GenerateContentConfig(
-                system_instruction=system,
-                response_mime_type="application/json",
-                response_json_schema=RESPONSE_SCHEMA,
-                max_output_tokens=16000,
-            ),
-        )
-    except genai_errors.ClientError as e:
-        if "API key" in str(e.message) or e.code in (401, 403):
-            raise ModelError("неверный GEMINI_API_KEY") from e
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SEC) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise ModelError("неверный OPENROUTER_API_KEY") from e
         if e.code == 429:
             raise ModelError("исчерпан лимит запросов бесплатного тарифа, попробуйте позже") from e
-        raise ModelError(f"ошибка API {e.code}: {e.message}") from e
-    except genai_errors.ServerError as e:
-        raise ModelError(f"ошибка сервера модели {e.code}") from e
-    except Exception as e:
-        if "timeout" in type(e).__name__.lower():
+        raise ModelError(f"ошибка API {e.code}") from e
+    except (TimeoutError, socket.timeout) as e:
+        raise ModelError(f"таймаут запроса к модели ({REQUEST_TIMEOUT_SEC:.0f} с)") from e
+    except urllib.error.URLError as e:
+        if isinstance(e.reason, (TimeoutError, socket.timeout)):
             raise ModelError(f"таймаут запроса к модели ({REQUEST_TIMEOUT_SEC:.0f} с)") from e
-        raise ModelError(f"нет соединения с API ({type(e).__name__})") from e
+        raise ModelError("нет соединения с API") from e
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise ModelError("API вернул не JSON") from e
 
-    usage = response.usage_metadata
-    finish = response.candidates[0].finish_reason if response.candidates else None
-    print(f"finish_reason={finish} usage={getattr(usage, 'prompt_token_count', '?')}in/"
-          f"{getattr(usage, 'candidates_token_count', '?')}out", file=sys.stderr)
+    if not isinstance(data, dict):
+        raise ModelError("API вернул неожиданный ответ")
+    if data.get("error"):
+        err = data["error"]
+        raise ModelError(f"ошибка API: {err.get('message', err) if isinstance(err, dict) else err}")
 
-    if response.prompt_feedback and response.prompt_feedback.block_reason:
-        raise ModelError(f"модель отказалась выполнять запрос ({response.prompt_feedback.block_reason})")
-    if finish is not None and finish.name == "MAX_TOKENS":
+    choices = data.get("choices") or []
+    if not choices:
+        raise ModelError("модель вернула пустой ответ")
+    choice = choices[0]
+    usage = data.get("usage") or {}
+    print(f"model={data.get('model')} finish_reason={choice.get('finish_reason')} "
+          f"usage={usage.get('prompt_tokens', '?')}in/{usage.get('completion_tokens', '?')}out",
+          file=sys.stderr)
+
+    finish = choice.get("finish_reason")
+    if finish == "length":
         raise ModelError("ответ модели обрезан по лимиту токенов")
-    if finish is not None and finish.name not in ("STOP", "FINISH_REASON_UNSPECIFIED"):
-        raise ModelError(f"модель остановилась с причиной {finish.name}")
+    if finish == "content_filter":
+        raise ModelError("модель отказалась выполнять запрос (content_filter)")
 
-    text = response.text or ""
+    text = (choice.get("message") or {}).get("content") or ""
     if not text.strip():
         raise ModelError("модель вернула пустой ответ")
     return text
+
+
+def call_model(system: str, user: str) -> str:
+    """Пробует основную модель, при ошибке — резервную. Бросает ModelError, если не вышло."""
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise ModelError("секрет OPENROUTER_API_KEY не задан")
+
+    errors = []
+    for model in [MODEL, FALLBACK_MODEL]:
+        try:
+            return _request_openrouter(api_key, model, system, user)
+        except ModelError as e:
+            print(f"{model}: {e}", file=sys.stderr)
+            errors.append(f"{model}: {e}")
+            if "неверный" in str(e):  # с неверным ключом нет смысла пробовать другую модель
+                break
+    raise ModelError("; ".join(errors))
 
 
 # ---------------------------------------------------------------------------

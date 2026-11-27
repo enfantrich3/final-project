@@ -72,7 +72,7 @@ class ThresholdTests(Base):
 
 class FallbackTests(Base):
     def test_no_api_key(self):
-        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": ""}):
+        with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}):
             md, comments = self.run_with(SMALL_DIFF)
         self.assertIsNone(comments)
         self.assertIn("не выполнено", md)
