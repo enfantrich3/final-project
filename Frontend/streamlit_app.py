@@ -43,6 +43,12 @@ def api(method, path, body=None, params=None, auth=True):
     return data if r.ok else None
 
 
+def load_reviews(property_id):
+    url = st.session_state.base_url.rstrip("/") + f"/api/v1/reviews/property/{property_id}"
+    r = requests.get(url)
+    return r.json()
+
+
 with st.sidebar:
     st.session_state.base_url = st.text_input("Адрес backend", st.session_state.base_url)
     if st.session_state.token:
@@ -93,6 +99,12 @@ with tabs[2]:
         st.session_state.catalog = api("GET", "/api/v1/properties", params={"city": city}, auth=False) or []
     for p in st.session_state.get("catalog", []):
         st.write(f"**{p.get('title')}** — {p.get('city')}, {p.get('basePrice')} ₽/сутки  \n`{p.get('id')}`")
+    st.divider()
+    st.subheader("Отзывы")
+    rpid = st.text_input("ID объекта", key="rv_pid")
+    if st.button("Показать отзывы"):
+        for rv in load_reviews(rpid):
+            st.write(f"{'★' * rv['rating']} — {rv['text']}")
     st.divider()
     st.subheader("Создать бронь")
     if not st.session_state.token:
