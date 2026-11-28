@@ -116,5 +116,36 @@ class FallbackTests(Base):
         self.assertIn("Не удалось прочитать diff", out.read_text(encoding="utf-8"))
 
 
+
+class ContextTests(Base):
+    def make_root(self):
+        root = self.tmp / "repo"
+        models = root / "RentalService" / "Models"
+        models.mkdir(parents=True)
+        (models / "User.cs").write_text("public string PasswordHash { get; set; }", encoding="utf-8")
+        (models / "Review.cs").write_text("class Review {}", encoding="utf-8")
+        return root
+
+    def test_model_files_sent_as_reference(self):
+        root = self.make_root()
+        files = r.parse_diff("diff --git a/RentalService/Models/Review.cs b/RentalService/Models/Review.cs\n+x\n")
+        context = r.load_context(root, files)
+        self.assertEqual(list(context), ["RentalService/Models/User.cs"])  # Review.cs уже в diff
+        prompt = r.build_user_prompt(files, context)
+        self.assertIn("<reference_files>", prompt)
+        self.assertIn("PasswordHash", prompt)
+
+    def test_comments_on_reference_files_dropped(self):
+        root = self.make_root()
+        payload = '{"comments": [' \
+                  '{"file": "RentalService/Models/User.cs", "line": 1, "severity": "info", "rule": "OTHER", "message": "m", "reason": "r"},' \
+                  '{"file": "RentalService/Controllers/A.cs", "line": 3, "severity": "error", "rule": "SEC-4", "message": "leak", "reason": "r"}]}'
+        d = self.tmp / "diff.txt"
+        d.write_text(SMALL_DIFF, encoding="utf-8")
+        with mock.patch.object(r, "call_model", return_value=payload) as cm:
+            md, comments = r.run(d, self.instr, None, root)
+        self.assertIn("PasswordHash", cm.call_args[0][1])
+        self.assertEqual([c["file"] for c in comments], ["RentalService/Controllers/A.cs"])
+
 if __name__ == "__main__":
     unittest.main()

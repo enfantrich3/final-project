@@ -42,6 +42,12 @@ MAX_FILES = int(os.environ.get("AI_REVIEW_MAX_FILES", "25"))
 
 REQUEST_TIMEOUT_SEC = float(os.environ.get("AI_REVIEW_TIMEOUT", "240"))
 
+# Неизменённые файлы, которые отправляются модели для справки (описание моделей данных).
+# Без них модель не знает, например, что у User есть PasswordHash, и не видит утечку
+# при Include(r => r.Author). Это небольшая папка, а не весь репозиторий.
+CONTEXT_GLOBS = [g for g in os.environ.get("AI_REVIEW_CONTEXT", "RentalService/Models/*.cs").split(",") if g.strip()]
+MAX_CONTEXT_CHARS = int(os.environ.get("AI_REVIEW_MAX_CONTEXT_CHARS", "20000"))
+
 # Второй рубеж фильтрации (первый — pathspec в `git diff` в workflow).
 IGNORED_PATTERNS = [
     "*.lock",
@@ -177,10 +183,41 @@ def build_system_prompt(instructions: str, agents_md: str | None) -> str:
     return SYSTEM_TEMPLATE.format(instructions=instructions, agents_block=agents_block)
 
 
-def build_user_prompt(files: list[FileDiff]) -> str:
+def load_context(root: Path, files: list[FileDiff]) -> dict[str, str]:
+    """Читает справочные файлы (модели данных), которых нет в diff. Не больше MAX_CONTEXT_CHARS."""
+    changed = {f.path for f in files}
+    context: dict[str, str] = {}
+    used = 0
+    for pattern in CONTEXT_GLOBS:
+        for path in sorted(root.glob(pattern.strip())):
+            rel = path.relative_to(root).as_posix()
+            if rel in changed or rel in context or not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if used + len(text) > MAX_CONTEXT_CHARS:
+                return context
+            context[rel] = text
+            used += len(text)
+    return context
+
+
+def build_user_prompt(files: list[FileDiff], context: dict[str, str] | None = None) -> str:
     listing = "\n".join(f"- {f.path} (+{f.added} / -{f.removed})" for f in files)
     body = "\n".join(f.text for f in files)
+    ref = ""
+    if context:
+        parts = "\n".join(f'<file path="{path}">\n{text}\n</file>' for path, text in context.items())
+        ref = (
+            "Справочные файлы проекта (в этом PR НЕ менялись). Используй их только чтобы понять, "
+            "какие поля есть у сущностей (например, что попадёт в ответ API при возврате сущности). "
+            "Комментарии к этим файлам не пиши.\n"
+            f"<reference_files>\n{parts}\n</reference_files>\n\n"
+        )
     return (
+        f"{ref}"
         f"Изменённые файлы:\n{listing}\n\n"
         f"<diff>\n{body}\n</diff>\n\n"
         "Верни все найденные нарушения чек-листа."
@@ -398,7 +435,8 @@ def _footer(skipped: list[str]) -> list[str]:
 # main
 # ---------------------------------------------------------------------------
 
-def run(diff_path: Path, instructions_path: Path, agents_path: Path | None) -> tuple[str, list[dict] | None]:
+def run(diff_path: Path, instructions_path: Path, agents_path: Path | None,
+        root: Path | None = None) -> tuple[str, list[dict] | None]:
     try:
         raw = diff_path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
@@ -426,8 +464,10 @@ def run(diff_path: Path, instructions_path: Path, agents_path: Path | None) -> t
     if agents_path and agents_path.is_file():
         agents_md = agents_path.read_text(encoding="utf-8", errors="replace")
 
+    context = load_context(root or Path.cwd(), files)
+
     try:
-        text = call_model(build_system_prompt(instructions, agents_md), build_user_prompt(files))
+        text = call_model(build_system_prompt(instructions, agents_md), build_user_prompt(files, context))
     except ModelError as e:
         return render_notice("не выполнено", f"Ревью не выполнено: {e}. Workflow продолжен без ревью.", skipped), None
 
@@ -436,6 +476,8 @@ def run(diff_path: Path, instructions_path: Path, agents_path: Path | None) -> t
         return render_notice("невалидный ответ",
                              "Модель вернула ответ, который не удалось разобрать как JSON по схеме. "
                              "Ревью не опубликовано.", skipped, raw=text), None
+    # справочные файлы в PR не менялись — замечания к ним не публикуем
+    comments = [c for c in comments if c["file"] not in context]
     return render_review(comments, files, skipped), comments
 
 
