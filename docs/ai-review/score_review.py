@@ -21,13 +21,16 @@ def norm(path: str) -> str:
     return path.strip().lstrip("./").removeprefix("b/")
 
 
-def near(line: int, lines: list[int]) -> bool:
-    return any(abs(line - l) <= TOLERANCE for l in lines if l) or (line == 0 and 0 in lines)
+def near(line: int, lines: list[int], tol: int = TOLERANCE) -> bool:
+    return any(abs(line - l) <= tol for l in lines if l) or (line == 0 and 0 in lines)
 
 
 def match(comment: dict, issues: list[dict]) -> list[dict]:
     f, line, rule = norm(comment["file"]), int(comment.get("line") or 0), comment.get("rule", "")
-    found = [i for i in issues if norm(i["file"]) == f and near(line, i["lines"])]
+    # модель иногда ошибается в номере строки на несколько строк, поэтому при совпадении
+    # кода правила допускаем больший разброс
+    found = [i for i in issues if norm(i["file"]) == f
+             and (near(line, i["lines"]) or (i["rule"] == rule and near(line, i["lines"], 3 * TOLERANCE)))]
     if rule.startswith("TEST"):
         found += [i for i in issues if i["rule"].startswith("TEST") and i not in found
                   and (norm(i["file"]) == f or "Tests" in f)
